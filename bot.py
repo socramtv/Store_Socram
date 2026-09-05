@@ -1,9 +1,26 @@
 import os
 import requests
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = int(os.getenv("PORT", "10000"))
+
+# --- Mini servidor web HTTP interno para cumplir con el plan gratuito de Render ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+    def log_message(self, format, *args):
+        pass
+
+def start_http_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthCheckHandler)
+    server.serve_forever()
+# ------------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o autor que deseas buscar y te proporcionaré sus enlaces de lectura y descarga directa.")
@@ -15,7 +32,6 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' y comprobando archivos disponibles...")
 
-    # Solicitamos campos de Open Library incluyendo el identificador de Internet Archive ('ia')
     url = f"https://openlibrary.org/search.json?q={requests.utils.quote(query)}&limit=5&fields=key,title,author_name,first_publish_year,ia,ebook_access"
     
     try:
@@ -54,7 +70,7 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texto_respuesta += f"   👤 *Autor:* {authors} ({year})\n"
             texto_respuesta += f"   🔗 [Ficha en Open Library]({web_link})\n"
             
-            # Comprobar si tiene archivos de descarga directa en Internet Archive
+            # Comprobar descargas directas en Internet Archive
             ia_list = doc.get("ia")
             if ia_list and isinstance(ia_list, list) and len(ia_list) > 0:
                 ia_id = ia_list[0]
@@ -86,10 +102,14 @@ def main():
         print("Error: TELEGRAM_BOT_TOKEN no está definido.")
         return
     
+    # Inicia el mini servidor web en segundo plano
+    threading.Thread(target=start_http_server, daemon=True).start()
+    
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), buscar_libros))
     application.run_polling()
 
-if __name__ == "main__":
+# ¡Aquí estaba el error de los guiones bajos!
+if __name__ == "__main__":
     main()
