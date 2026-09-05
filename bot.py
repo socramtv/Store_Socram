@@ -5,6 +5,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
@@ -34,6 +35,8 @@ async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     apk_path = None
     browser = None
+    screenshot_path = "./error_screenshot.png"
+    
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -52,24 +55,31 @@ async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 viewport={"width": 1280, "height": 800}
             )
             
-            await context_browser.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
             page = await context_browser.new_page()
+            
+            # Aplicar técnicas de sigilo para evitar detección de bots
+            await stealth_async(page)
 
-            # Navegación directa a la URL de resultados de búsqueda para evitar bloqueos de formulario
+            # Navegación directa a la URL de resultados de búsqueda
             search_url = f"https://www.happymod.cloud/search.html?q={nombre_app}"
             await page.goto(search_url, timeout=60000)
             
-            # Esperar a que aparezca cualquier enlace de resultado de la lista
-            result_selector = "a.title, .card-title a, h3 a, .search-item a, .box-img-s a, .p-name a"
-            await page.wait_for_selector(result_selector, timeout=15000)
+            # Pausa para dar tiempo a que Cloudflare o el JS de la página respondan
+            await asyncio.sleep(4)
+
+            # Guardar captura preventiva para ver qué hay en pantalla
+            await page.screenshot(path=screenshot_path)
+
+            # Esperar a que aparezca algún enlace de resultado
+            result_selector = "a.title, .card-title a, h3 a, .search-item a, .box-img-s a, .p-name a, div.list-container a"
+            await page.wait_for_selector(result_selector, timeout=10000)
             
-            # Hacer clic en el primer resultado válido
+            # Hacer clic en el primer resultado
             await page.click(result_selector)
 
             await asyncio.sleep(2)
             
-            # Capturar la descarga al pulsar el botón de descarga final
+            # Capturar descarga
             async with page.expect_download(timeout=45000) as download_info:
                 download_button = "a.download-btn, .btn-download, a.btn-normal, a:has-text('Download')"
                 await page.click(download_button)
@@ -86,11 +96,18 @@ async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await browser.close()
             except:
                 pass
+        
+        # Enviar mensaje de error y la captura de pantalla para diagnóstico
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
-            text=f"No se pudo completar la descarga. Es posible que Cloudflare haya bloqueado la IP de Render o la app no exista. Detalle: {str(e)[:120]}"
+            text=f"Cloudflare ha bloqueado la IP de Render o la página no cargó. Aquí tienes la captura de lo que ve el bot:"
         )
+        
+        if os.path.exists(screenshot_path):
+            with open(screenshot_path, 'rb') as photo:
+                await update.message.reply_photo(photo=photo, caption="Pantallazo del bloqueo de Cloudflare")
+            os.remove(screenshot_path)
         return
 
     if apk_path and os.path.exists(apk_path):
@@ -110,7 +127,7 @@ async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="¡Descarga completada! Enviando archivo..."
             )
             with open(apk_path, 'rb') as apk_file:
-                await update.message.reply_document(document=apk_file, caption=f"APK de la búsqueda")
+                await update.message.reply_document(document=apk_file, caption=f"APK solicitado")
             os.remove(apk_path)
     else:
         await context.bot.edit_message_text(
@@ -131,5 +148,5 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), procesar_busqueda))
     application.run_polling()
 
-if __name__ == "__main__":
+if __name__ == "main__":
     main()
