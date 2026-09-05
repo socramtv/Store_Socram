@@ -21,34 +21,53 @@ async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     browser = None
     try:
         async with async_playwright() as p:
+            # Lanzar navegador con argumentos anti-detección
             browser = await p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-infobars"
+                ]
             )
+            
             context_browser = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800}
             )
+            
+            # Ocultar propiedades de automatización del navegador
+            await context_browser.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
             page = await context_browser.new_page()
 
             # Navegar a HappyMod
             await page.goto("https://www.happymod.cloud/", timeout=60000)
             
-            # Localizar barra de búsqueda e introducir la consulta
+            # Localizar barra de búsqueda, rellenar y enviar
             search_input_selector = "input[name='q'], input[type='text'], .search-input"
-            await page.wait_for_selector(search_input_selector, timeout=10000)
+            await page.wait_for_selector(search_input_selector, timeout=15000)
             await page.fill(search_input_selector, nombre_app)
             await page.press(search_input_selector, "Enter")
 
-            # Esperar resultados y hacer clic en el primero
-            await page.wait_for_load_state("networkidle", timeout=10000)
-            first_result = "h3 a, .title a, .search-item-title, .box-img-s a"
-            await page.click(first_result, timeout=5000)
+            # Esperar a que carguen los resultados con mayor margen de tiempo
+            await page.load_state = "networkidle"
+            await asyncio.sleep(3) # Pausa de seguridad para renderizado dinámico
 
-            # Esperar página de descarga y capturar el archivo
-            await page.wait_for_load_state("networkidle", timeout=10000)
-            async with page.expect_download(timeout=30000) as download_info:
-                download_button = "a.download-btn, .btn-download, a:has-text('Download')"
-                await page.click(download_button, timeout=5000)
+            # Intentar hacer clic en el primer resultado de la lista
+            first_result = "a.title, .card-title a, h3 a, .search-item a, .box-img-s a"
+            await page.wait_for_selector(first_result, timeout=15000)
+            await page.click(first_result)
+
+            # Esperar página de descarga del mod específico
+            await asyncio.sleep(2)
+            
+            # Capturar el evento de descarga al pulsar el botón de descarga final
+            async with page.expect_download(timeout=45000) as download_info:
+                download_button = "a.download-btn, .btn-download, a.btn-normal, a:has-text('Download')"
+                await page.click(download_button)
             
             download = await download_info.value
             os.makedirs("./downloads", exist_ok=True)
@@ -58,11 +77,14 @@ async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         if browser:
-            await browser.close()
+            try:
+                await browser.close()
+            except:
+                pass
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
-            text=f"No se pudo completar la descarga automáticamente. Es posible que los selectores requieran ajustes. Detalle: {str(e)}"
+            text=f"No se pudo completar la descarga automáticamente. Es posible que la web requiera resolución manual de CAPTCHA o haya bloqueado la petición. Detalle técnico: {str(e)[:150]}"
         )
         return
 
