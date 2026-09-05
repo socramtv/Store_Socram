@@ -14,11 +14,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-# Cargamos la nueva API Key desde Render
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
 PORT = int(os.getenv("PORT", "10000"))
 
-# --- Mini servidor web HTTP interno ---
+# --- Mini servidor web HTTP interno para Render ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -31,18 +30,19 @@ def start_http_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthCheckHandler)
     server.serve_forever()
 
-# --- LÓGICA DEL BOT ---
+# --- FUNCIONES DEL BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 ¡Hola Marco! Envíame el título del libro o autor que deseas buscar.")
+    logger.info(f"Comando /start recibido de {update.effective_user.first_name}")
+    await update.message.reply_text("📚 ¡Hola Marco! Envíame el título del libro o autor que deseas buscar y te mostraré los resultados.")
 
 async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TOKEN:
         return
 
     query = update.message.text.strip()
-    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en los servidores de Google Books...")
+    logger.info(f"Búsqueda recibida: {query}")
+    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en Google Books...")
 
-    # Si configuraste la clave en Render, la añadimos a la URL para que Google no nos bloquee
     if GOOGLE_API_KEY:
         url = f"https://www.googleapis.com/books/v1/volumes?q={requests.utils.quote(query)}&maxResults=5&key={GOOGLE_API_KEY}"
     else:
@@ -53,18 +53,11 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if response.status_code != 200:
             logger.error(f"Error Google Books: {response.status_code}")
-            if response.status_code == 429:
-                await context.bot.edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=mensaje_espera.message_id,
-                    text="Error 429: Google ha bloqueado la petición por exceso de tráfico. Asegúrate de haber puesto bien la GOOGLE_API_KEY en Render."
-                )
-            else:
-                await context.bot.edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=mensaje_espera.message_id,
-                    text=f"Error al conectar con los servidores (Código {response.status_code})."
-                )
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=mensaje_espera.message_id,
+                text=f"Error al conectar con los servidores (Código {response.status_code})."
+            )
             return
 
         data = response.json()
@@ -92,7 +85,6 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texto_respuesta += f"   👤 *Autor:* {authors}\n"
             texto_respuesta += f"   📅 *Año:* {year}\n"
             
-            # Extraer enlaces
             info_link = vol_info.get("infoLink", "")
             epub_link = acc_info.get("epub", {}).get("downloadLink", "")
             pdf_link = acc_info.get("pdf", {}).get("downloadLink", "")
@@ -125,24 +117,23 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
-            text=f"Ocurrió un error al procesar la búsqueda. Detalle técnico: {str(e)[:100]}"
+            text=f"Ocurrió un error al procesar la búsqueda."
         )
 
 def main():
     logger.info("Iniciando el script del bot...")
     
     if not TOKEN:
-        logger.error("¡ERROR CRÍTICO! La variable TELEGRAM_BOT_TOKEN no está definida o está vacía.")
+        logger.error("¡ERROR CRÍTICO! La variable TELEGRAM_BOT_TOKEN no está definida.")
         return
-        
-    if not GOOGLE_API_KEY:
-        logger.warning("ATENCIÓN: No hay GOOGLE_API_KEY configurada. Podrían ocurrir errores 429.")
     
     logger.info(f"Arrancando servidor HTTP en puerto {PORT}...")
     threading.Thread(target=start_http_server, daemon=True).start()
     
     logger.info("Configurando conexión con Telegram...")
     application = ApplicationBuilder().token(TOKEN).build()
+    
+    # Registro de manejadores (Handlers)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), buscar_libros))
     
