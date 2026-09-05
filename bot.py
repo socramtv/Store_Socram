@@ -14,6 +14,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Cargamos la nueva API Key desde Render
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
 PORT = int(os.getenv("PORT", "10000"))
 
 # --- Mini servidor web HTTP interno ---
@@ -31,7 +33,7 @@ def start_http_server():
 
 # --- LÓGICA DEL BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 ¡Hola Marco! Envíame el título del libro o autor que deseas buscar. Te buscaré las mejores opciones disponibles.")
+    await update.message.reply_text("📚 ¡Hola Marco! Envíame el título del libro o autor que deseas buscar.")
 
 async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TOKEN:
@@ -40,19 +42,29 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en los servidores de Google Books...")
 
-    # Petición a la API oficial de Google Books (No bloquea IPs de Render)
-    url = f"https://www.googleapis.com/books/v1/volumes?q={requests.utils.quote(query)}&maxResults=5"
+    # Si configuraste la clave en Render, la añadimos a la URL para que Google no nos bloquee
+    if GOOGLE_API_KEY:
+        url = f"https://www.googleapis.com/books/v1/volumes?q={requests.utils.quote(query)}&maxResults=5&key={GOOGLE_API_KEY}"
+    else:
+        url = f"https://www.googleapis.com/books/v1/volumes?q={requests.utils.quote(query)}&maxResults=5"
     
     try:
         response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
             logger.error(f"Error Google Books: {response.status_code}")
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=mensaje_espera.message_id,
-                text=f"Error al conectar con los servidores (Código {response.status_code})."
-            )
+            if response.status_code == 429:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=mensaje_espera.message_id,
+                    text="Error 429: Google ha bloqueado la petición por exceso de tráfico. Asegúrate de haber puesto bien la GOOGLE_API_KEY en Render."
+                )
+            else:
+                await context.bot.edit_message_text(
+                    chat_id=update.effective_chat.id,
+                    message_id=mensaje_espera.message_id,
+                    text=f"Error al conectar con los servidores (Código {response.status_code})."
+                )
             return
 
         data = response.json()
@@ -74,30 +86,27 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             title = vol_info.get("title", "Título desconocido")
             authors = ", ".join(vol_info.get("authors", ["Autor desconocido"]))
-            year = vol_info.get("publishedDate", "Desconocido")[:4] # Extraemos solo el año
+            year = vol_info.get("publishedDate", "Desconocido")[:4]
             
             texto_respuesta += f"*{i}. {title}*\n"
             texto_respuesta += f"   👤 *Autor:* {authors}\n"
             texto_respuesta += f"   📅 *Año:* {year}\n"
             
-            # Extraer enlaces de descarga o lectura
+            # Extraer enlaces
             info_link = vol_info.get("infoLink", "")
             epub_link = acc_info.get("epub", {}).get("downloadLink", "")
             pdf_link = acc_info.get("pdf", {}).get("downloadLink", "")
             web_reader = acc_info.get("webReaderLink", "")
             
             enlaces = []
-            # Si el libro es gratuito y de dominio público, Google nos da el link de descarga
             if epub_link:
                 enlaces.append(f"[Descargar EPUB]({epub_link})")
             if pdf_link:
                 enlaces.append(f"[Descargar PDF]({pdf_link})")
             
-            # Si no hay descarga directa, al menos damos la opción de leerlo en el navegador
             if not enlaces and web_reader:
                 enlaces.append(f"[Leer en Web]({web_reader})")
             
-            # Como última opción, un enlace a la ficha técnica
             if not enlaces and info_link:
                 enlaces.append(f"[Ficha del Libro]({info_link})")
                 
@@ -113,7 +122,6 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error en la búsqueda: {e}")
-        # Ahora el bot te dirá exactamente QUÉ ha fallado al final del mensaje
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
@@ -126,6 +134,9 @@ def main():
     if not TOKEN:
         logger.error("¡ERROR CRÍTICO! La variable TELEGRAM_BOT_TOKEN no está definida o está vacía.")
         return
+        
+    if not GOOGLE_API_KEY:
+        logger.warning("ATENCIÓN: No hay GOOGLE_API_KEY configurada. Podrían ocurrir errores 429.")
     
     logger.info(f"Arrancando servidor HTTP en puerto {PORT}...")
     threading.Thread(target=start_http_server, daemon=True).start()
