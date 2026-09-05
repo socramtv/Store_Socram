@@ -31,28 +31,23 @@ def start_http_server():
 
 # --- LÓGICA DEL BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o autor que deseas buscar. Te ofreceré enlaces de descarga directa.")
+    await update.message.reply_text("📚 ¡Hola Marco! Envíame el título del libro o autor que deseas buscar. Te buscaré las mejores opciones disponibles.")
 
 async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TOKEN:
         return
 
     query = update.message.text.strip()
-    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en la biblioteca libre...")
+    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en los servidores de Google Books...")
 
-    # Petición a la API de Gutendex (Project Gutenberg)
-    url = f"https://gutendex.com/books?search={requests.utils.quote(query)}"
+    # Petición a la API oficial de Google Books (No bloquea IPs de Render)
+    url = f"https://www.googleapis.com/books/v1/volumes?q={requests.utils.quote(query)}&maxResults=5"
     
     try:
-        # Añadimos un User-Agent de navegador real para evitar que nos bloqueen
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, timeout=15)
         
         if response.status_code != 200:
-            logger.error(f"Error Gutendex: {response.status_code} - {response.text}")
+            logger.error(f"Error Google Books: {response.status_code}")
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=mensaje_espera.message_id,
@@ -61,9 +56,9 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         data = response.json()
-        results = data.get("results", [])
+        items = data.get("items", [])
 
-        if not results:
+        if not items:
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=mensaje_espera.message_id,
@@ -73,44 +68,40 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         texto_respuesta = f"📖 *Resultados para '{query}':*\n\n"
         
-        # Procesamos hasta 5 resultados
-        for i, doc in enumerate(results[:5], 1):
-            title = doc.get("title", "Título desconocido")
+        for i, item in enumerate(items, 1):
+            vol_info = item.get("volumeInfo", {})
+            acc_info = item.get("accessInfo", {})
             
-            # Formatear autores
-            authors_data = doc.get("authors", [])
-            if authors_data:
-                authors = ", ".join([a.get("name", "") for a in authors_data])
-                authors = authors.replace(", ", " ") 
-            else:
-                authors = "Autor desconocido"
-
-            # Idiomas disponibles
-            languages = ", ".join(doc.get("languages", ["Desconocido"])).upper()
+            title = vol_info.get("title", "Título desconocido")
+            authors = ", ".join(vol_info.get("authors", ["Autor desconocido"]))
+            year = vol_info.get("publishedDate", "Desconocido")[:4] # Extraemos solo el año
             
             texto_respuesta += f"*{i}. {title}*\n"
             texto_respuesta += f"   👤 *Autor:* {authors}\n"
-            texto_respuesta += f"   🌐 *Idioma:* {languages}\n"
+            texto_respuesta += f"   📅 *Año:* {year}\n"
             
-            # Extraer enlaces de descarga
-            formats = doc.get("formats", {})
-            epub_link = formats.get("application/epub+zip")
-            pdf_link = formats.get("application/pdf")
-            html_link = formats.get("text/html")
+            # Extraer enlaces de descarga o lectura
+            info_link = vol_info.get("infoLink", "")
+            epub_link = acc_info.get("epub", {}).get("downloadLink", "")
+            pdf_link = acc_info.get("pdf", {}).get("downloadLink", "")
+            web_reader = acc_info.get("webReaderLink", "")
             
             enlaces = []
+            # Si el libro es gratuito y de dominio público, Google nos da el link de descarga
             if epub_link:
-                enlaces.append(f"[EPUB]({epub_link})")
+                enlaces.append(f"[Descargar EPUB]({epub_link})")
             if pdf_link:
-                enlaces.append(f"[PDF]({pdf_link})")
-            if html_link:
-                html_clean = html_link.split(';')[0] if ';' in html_link else html_link
-                enlaces.append(f"[Leer Web]({html_clean})")
+                enlaces.append(f"[Descargar PDF]({pdf_link})")
+            
+            # Si no hay descarga directa, al menos damos la opción de leerlo en el navegador
+            if not enlaces and web_reader:
+                enlaces.append(f"[Leer en Web]({web_reader})")
+            
+            # Como última opción, un enlace a la ficha técnica
+            if not enlaces and info_link:
+                enlaces.append(f"[Ficha del Libro]({info_link})")
                 
-            if enlaces:
-                texto_respuesta += f"   📥 *Descargas:* {' | '.join(enlaces)}\n\n"
-            else:
-                texto_respuesta += "   📥 *Descargas:* No disponibles temporalmente\n\n"
+            texto_respuesta += f"   📥 *Opciones:* {' | '.join(enlaces)}\n\n"
 
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -122,10 +113,11 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Error en la búsqueda: {e}")
+        # Ahora el bot te dirá exactamente QUÉ ha fallado al final del mensaje
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
-            text=f"Ocurrió un error de conexión al procesar la búsqueda."
+            text=f"Ocurrió un error al procesar la búsqueda. Detalle técnico: {str(e)[:100]}"
         )
 
 def main():
