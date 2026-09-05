@@ -1,152 +1,84 @@
 import os
-import asyncio
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
-from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-PORT = int(os.getenv("PORT", "10000"))
-
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive and running!")
-    def log_message(self, format, *args):
-        pass
-
-def start_http_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthCheckHandler)
-    server.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("¡Hola! Envíame el nombre de la aplicación que deseas buscar en HappyMod.")
+    await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o el nombre del autor que deseas buscar en Open Library.")
 
-async def procesar_busqueda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TOKEN:
-        await update.message.reply_text("El token del bot no está configurado en el servidor.")
         return
 
-    nombre_app = update.message.text.strip().replace(" ", "+")
-    mensaje_espera = await update.message.reply_text(f"Buscando '{update.message.text.strip()}', por favor espera unos segundos...")
+    query = update.message.text.strip()
+    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en Open Library...")
 
-    apk_path = None
-    browser = None
-    screenshot_path = "./error_screenshot.png"
+    # Petición a la API JSON pública de Open Library
+    url = f"https://openlibrary.org/search.json?q={requests.utils.quote(query)}&limit=5"
     
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-infobars"
-                ]
+        # Open Library solicita un User-Agent identificativo en las peticiones frecuentes
+        headers = {"User-Agent": "TelegramBookBot/1.0 (botcontacto@gmail.com)"}
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=mensaje_espera.message_id,
+                text="Error al conectar con los servidores de Open Library."
             )
-            
-            context_browser = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800}
+            return
+
+        data = response.json()
+        docs = data.get("docs", [])
+
+        if not docs:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=mensaje_espera.message_id,
+                text="No se encontraron libros que coincidan con tu búsqueda."
             )
-            
-            page = await context_browser.new_page()
-            
-            # Aplicar técnicas de sigilo para evitar detección de bots
-            await stealth_async(page)
+            return
 
-            # Navegación directa a la URL de resultados de búsqueda
-            search_url = f"https://www.happymod.cloud/search.html?q={nombre_app}"
-            await page.goto(search_url, timeout=60000)
+        texto_respuesta = f"📖 *Resultados para '{query}':*\n\n"
+        for i, doc in enumerate(docs[:5], 1):
+            title = doc.get("title", "Título desconocido")
+            authors = ", ".join(doc.get("author_name", ["Autor desconocido"]))
+            year = doc.get("first_publish_year", "Año desconocido")
+            key = doc.get("key", "") # Ej: /works/OL123W
+            link = f"https://openlibrary.org{key}" if key else "https://openlibrary.org"
             
-            # Pausa para dar tiempo a que Cloudflare o el JS de la página respondan
-            await asyncio.sleep(4)
+            texto_respuesta += f"*{i}. {title}*\n"
+            texto_respuesta += f"   👤 *Autor:* {authors}\n"
+            texto_respuesta += f"   📅 *Publicación:* {year}\n"
+            texto_respuesta += f"   🔗 [Ver / Leer en Open Library]({link})\n\n"
 
-            # Guardar captura preventiva para ver qué hay en pantalla
-            await page.screenshot(path=screenshot_path)
-
-            # Esperar a que aparezca algún enlace de resultado
-            result_selector = "a.title, .card-title a, h3 a, .search-item a, .box-img-s a, .p-name a, div.list-container a"
-            await page.wait_for_selector(result_selector, timeout=10000)
-            
-            # Hacer clic en el primer resultado
-            await page.click(result_selector)
-
-            await asyncio.sleep(2)
-            
-            # Capturar descarga
-            async with page.expect_download(timeout=45000) as download_info:
-                download_button = "a.download-btn, .btn-download, a.btn-normal, a:has-text('Download')"
-                await page.click(download_button)
-            
-            download = await download_info.value
-            os.makedirs("./downloads", exist_ok=True)
-            apk_path = os.path.join("./downloads", download.suggested_filename)
-            await download.save_as(apk_path)
-            await browser.close()
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=mensaje_espera.message_id,
+            text=texto_respuesta,
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
 
     except Exception as e:
-        if browser:
-            try:
-                await browser.close()
-            except:
-                pass
-        
-        # Enviar mensaje de error y la captura de pantalla para diagnóstico
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
-            text=f"Cloudflare ha bloqueado la IP de Render o la página no cargó. Aquí tienes la captura de lo que ve el bot:"
-        )
-        
-        if os.path.exists(screenshot_path):
-            with open(screenshot_path, 'rb') as photo:
-                await update.message.reply_photo(photo=photo, caption="Pantallazo del bloqueo de Cloudflare")
-            os.remove(screenshot_path)
-        return
-
-    if apk_path and os.path.exists(apk_path):
-        file_size = os.path.getsize(apk_path) / (1024 * 1024)
-        
-        if file_size > 50:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=mensaje_espera.message_id,
-                text="El archivo supera los 50 MB permitidos por la API estándar de Telegram y no se puede enviar."
-            )
-            os.remove(apk_path)
-        else:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=mensaje_espera.message_id,
-                text="¡Descarga completada! Enviando archivo..."
-            )
-            with open(apk_path, 'rb') as apk_file:
-                await update.message.reply_document(document=apk_file, caption=f"APK solicitado")
-            os.remove(apk_path)
-    else:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=mensaje_espera.message_id,
-            text="No se pudo obtener el archivo APK."
+            text=f"Ocurrió un error al procesar la búsqueda: {str(e)[:100]}"
         )
 
 def main():
     if not TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN no está definido.")
         return
-
-    threading.Thread(target=start_http_server, daemon=True).start()
-
+    
     application = ApplicationBuilder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), procesar_busqueda))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), buscar_libros))
     application.run_polling()
 
-if __name__ == "main__":
+if __name__ == "__main__":
     main()
