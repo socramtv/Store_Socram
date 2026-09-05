@@ -6,20 +6,19 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o el nombre del autor que deseas buscar en Open Library.")
+    await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o autor que deseas buscar y te proporcionaré sus enlaces de lectura y descarga directa.")
 
 async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TOKEN:
         return
 
     query = update.message.text.strip()
-    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' en Open Library...")
+    mensaje_espera = await update.message.reply_text(f"🔍 Buscando '{query}' y comprobando archivos disponibles...")
 
-    # Petición a la API JSON pública de Open Library
-    url = f"https://openlibrary.org/search.json?q={requests.utils.quote(query)}&limit=5"
+    # Solicitamos campos de Open Library incluyendo el identificador de Internet Archive ('ia')
+    url = f"https://openlibrary.org/search.json?q={requests.utils.quote(query)}&limit=5&fields=key,title,author_name,first_publish_year,ia,ebook_access"
     
     try:
-        # Open Library solicita un User-Agent identificativo en las peticiones frecuentes
         headers = {"User-Agent": "TelegramBookBot/1.0 (botcontacto@gmail.com)"}
         response = requests.get(url, headers=headers, timeout=10)
         
@@ -43,17 +42,29 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         texto_respuesta = f"📖 *Resultados para '{query}':*\n\n"
+        
         for i, doc in enumerate(docs[:5], 1):
             title = doc.get("title", "Título desconocido")
             authors = ", ".join(doc.get("author_name", ["Autor desconocido"]))
-            year = doc.get("first_publish_year", "Año desconocido")
-            key = doc.get("key", "") # Ej: /works/OL123W
-            link = f"https://openlibrary.org{key}" if key else "https://openlibrary.org"
+            year = doc.get("first_publish_year", "Desconocido")
+            key = doc.get("key", "")
+            web_link = f"https://openlibrary.org{key}" if key else "https://openlibrary.org"
             
             texto_respuesta += f"*{i}. {title}*\n"
-            texto_respuesta += f"   👤 *Autor:* {authors}\n"
-            texto_respuesta += f"   📅 *Publicación:* {year}\n"
-            texto_respuesta += f"   🔗 [Ver / Leer en Open Library]({link})\n\n"
+            texto_respuesta += f"   👤 *Autor:* {authors} ({year})\n"
+            texto_respuesta += f"   🔗 [Ficha en Open Library]({web_link})\n"
+            
+            # Comprobar si tiene archivos de descarga directa en Internet Archive
+            ia_list = doc.get("ia")
+            if ia_list and isinstance(ia_list, list) and len(ia_list) > 0:
+                ia_id = ia_list[0]
+                pdf_link = f"https://archive.org/download/{ia_id}/{ia_id}.pdf"
+                epub_link = f"https://archive.org/download/{ia_id}/{ia_id}.epub"
+                texto_respuesta += f"   📥 *Descargas:* [PDF]({pdf_link}) | [EPUB]({epub_link})\n"
+            else:
+                texto_respuesta += f"   🔒 *Disponibilidad:* Solo lectura en web / Préstamo\n"
+                
+            texto_respuesta += "\n"
 
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
@@ -80,5 +91,5 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), buscar_libros))
     application.run_polling()
 
-if __name__ == "__main__":
+if __name__ == "main__":
     main()
