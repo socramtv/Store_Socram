@@ -31,7 +31,7 @@ def start_http_server():
 
 # --- LÓGICA DEL BOT ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o autor que deseas buscar. Te ofreceré enlaces de descarga directa y garantizada.")
+    await update.message.reply_text("📚 ¡Hola! Envíame el título del libro o autor que deseas buscar. Te ofreceré enlaces de descarga directa.")
 
 async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TOKEN:
@@ -44,13 +44,19 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = f"https://gutendex.com/books?search={requests.utils.quote(query)}"
     
     try:
-        response = requests.get(url, timeout=15)
+        # Añadimos un User-Agent de navegador real para evitar que nos bloqueen
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code != 200:
+            logger.error(f"Error Gutendex: {response.status_code} - {response.text}")
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=mensaje_espera.message_id,
-                text="Error al conectar con los servidores de búsqueda."
+                text=f"Error al conectar con los servidores (Código {response.status_code})."
             )
             return
 
@@ -75,7 +81,6 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             authors_data = doc.get("authors", [])
             if authors_data:
                 authors = ", ".join([a.get("name", "") for a in authors_data])
-                # Limpiar el formato típico "Apellido, Nombre" de Gutenberg
                 authors = authors.replace(", ", " ") 
             else:
                 authors = "Autor desconocido"
@@ -87,7 +92,7 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texto_respuesta += f"   👤 *Autor:* {authors}\n"
             texto_respuesta += f"   🌐 *Idioma:* {languages}\n"
             
-            # Extraer enlaces de descarga reales disponibles
+            # Extraer enlaces de descarga
             formats = doc.get("formats", {})
             epub_link = formats.get("application/epub+zip")
             pdf_link = formats.get("application/pdf")
@@ -99,7 +104,6 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if pdf_link:
                 enlaces.append(f"[PDF]({pdf_link})")
             if html_link:
-                # Gutenberg suele poner las urls html terminadas en charset=utf-8, lo limpiamos para que el enlace sea válido
                 html_clean = html_link.split(';')[0] if ';' in html_link else html_link
                 enlaces.append(f"[Leer Web]({html_clean})")
                 
@@ -121,7 +125,7 @@ async def buscar_libros(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=mensaje_espera.message_id,
-            text=f"Ocurrió un error al procesar la búsqueda."
+            text=f"Ocurrió un error de conexión al procesar la búsqueda."
         )
 
 def main():
